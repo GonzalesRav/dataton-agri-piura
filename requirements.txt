@@ -1,10 +1,6 @@
 pandas
 numpy
-geopandas
-shapely
-pyproj
-plotly
 streamlit
-scikit-learn
-statsmodels
-matplotlib
+plotly
+jupyter
+ipykernel
