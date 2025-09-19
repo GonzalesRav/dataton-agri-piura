@@ -4,3 +4,4 @@ streamlit
 plotly
 jupyter
 ipykernel
+streamlit-plotly-events

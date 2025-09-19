@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import plotly.graph_objects as go
+from streamlit_plotly_events import plotly_events
 
 # ---------- Rutas ----------
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -66,6 +68,37 @@ def kpi_number(val, label, help_text=None, format_str=None):
     else:
         c.metric(label, f"{val:,.2f}" if pd.notna(val) else "—", help=help_text)
 
+def help_box(title: str, body_md: str):
+    """
+    Muestra una ayuda contextual.
+    Usa st.popover si está disponible, si no usa st.expander como fallback.
+    """
+    try:
+        pop = st.popover(title)  # Disponible en streamlit >=1.29
+        with pop:
+            st.markdown(body_md)
+    except Exception:
+        with st.expander(title):
+            st.markdown(body_md)
+
+def render_map_with_click(fig):
+    """
+    Dibuja el fig y retorna UBIGEO del punto clickeado (o None).
+    """
+    selected = plotly_events(
+        fig,
+        click_event=True,
+        select_event=False,
+        hover_event=False,
+        override_width="100%",
+        override_height=420
+    )
+    if selected and len(selected) > 0:
+        pt = selected[0]
+        # En choropleth, Plotly coloca el código de área en 'location'
+        return pt.get("location")
+    return None
+
 # ---------- Carga ----------
 df, tri, anu, cov, gj = load_data()
 if df.empty:
@@ -96,7 +129,12 @@ df_f = df.loc[mask].copy()
 # VERDE lag (proxy de oferta futura)
 df_f = df_f.sort_values("FECHA_YYYYMM")
 df_f["VERDE_LAG"] = df_f.groupby(["UBIGEO","CULTIVO"])["VERDE_ACTUAL"].shift(lag_meses)
-
+st.sidebar.caption("""
+**Lag VERDE_ACTUAL:**  
+- Desplaza `VERDE_ACTUAL` **hacia adelante** para compararlo con la producción futura.  
+- Ejemplo: con lag=2, el valor de *noviembre* de `VERDE_ACTUAL` se compara con la producción de *enero*.  
+- Sirve como **alerta temprana** de posibles picos de oferta.
+""")
 # ---------- KPIs ----------
 col1, col2, col3, col4 = st.columns(4)
 prod_tot = df_f["PRODUCCION"].sum()
@@ -130,92 +168,294 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["Diagnóstico", "Mercado", "Predicción"
 
 # ========== Tab 1: Diagnóstico ==========
 with tab1:
-    left, right = st.columns([1.15, 1])
-    with left:
-        st.subheader("Serie: Producción (t) y VERDE_LAG (ha)")
-        # agregación mensual
-        g1 = (df_f.groupby("FECHA_YYYYMM", as_index=False)
-                  .agg(PROD=("PRODUCCION","sum"),
-                       VERDE_LAG=("VERDE_LAG","sum")))
-        fig1 = px.bar(g1, x="FECHA_YYYYMM", y="PROD", labels={"PROD":"Producción (t)", "FECHA_YYYYMM":"Mes"})
-        fig1.add_scatter(x=g1["FECHA_YYYYMM"], y=g1["VERDE_LAG"], mode="lines", name=f"VERDE_LAG ({lag_meses}m)")
-        fig1.update_layout(margin=dict(l=10,r=10,t=10,b=10))
-        st.plotly_chart(fig1, use_container_width=True)
+    # left, right = st.columns([1.15, 1])
+    # with left:
+        # st.subheader("Serie: Producción total (t) y Superficie verde desplazada (ha)")
+        # # agregación mensual
+        # g1 = (df_f.groupby("FECHA_YYYYMM", as_index=False)
+        #           .agg(PROD=("PRODUCCION","sum"),
+        #                VERDE_LAG=("VERDE_LAG","sum")))
+        # fig1 = px.bar(g1, x="FECHA_YYYYMM", y="PROD", labels={"PROD":"Producción (t)", "FECHA_YYYYMM":"Mes"})
+        # fig1.add_scatter(x=g1["FECHA_YYYYMM"], y=g1["VERDE_LAG"], mode="lines", name=f"VERDE_LAG ({lag_meses}m)")
+        # fig1.update_layout(margin=dict(l=10,r=10,t=10,b=10))
+        # st.plotly_chart(fig1, use_container_width=True)
+        # help_box(
+        # "ℹ️ ¿Cómo leer este gráfico?",
+        # f"""
+        # **Barras**: producción mensual (t).  
+        # **Línea**: Superficie verde actual **desplazada** *{lag_meses}* mes(es).  
+        # - El *desplazamiento* mueve los valores de la superficie verde hacia adelante *{lag_meses}* mes(es) para compararlos con la producción **futura**. Ej. Si vemos la barra de producción de mayo, la línea muestra la superficie verde de marzo.  
+        # - Si la línea sube hoy, es común ver barras altas **después** → alerta de posible **pico de oferta**.
+        # - Superficie verde actual funciona como **proxy de oferta futura**:  si hoy el “verde” sube, en los próximos meses suele **aumentar la producción**.  
+        # - Si la línea sube, espera barras más altas **después** (picos de oferta).
+        # """
+        # )
 
-    with right:
-        st.subheader("Siembra/Cosecha y Rendimiento (t/ha)")
-        g2 = (df_f.groupby("FECHA_YYYYMM", as_index=False)
-                  .agg(SIEM=("SIEMBRA","sum"),
-                       COSE=("COSECHA","sum"),
-                       PROD=("PRODUCCION","sum")))
-        g2["REND_THA"] = np.where(g2["COSE"]>0, g2["PROD"]/g2["COSE"], np.nan)
-        fig2 = px.bar(g2, x="FECHA_YYYYMM", y=["SIEM","COSE"], barmode="group",
-                      labels={"value":"ha","variable":"Superficie"})
-        fig2.add_scatter(x=g2["FECHA_YYYYMM"], y=g2["REND_THA"], mode="lines", name="Rendimiento (t/ha)", yaxis="y2")
-        fig2.update_layout(
-            yaxis2=dict(title="t/ha", overlaying="y", side="right"),
-            margin=dict(l=10,r=10,t=10,b=10)
-        )
-        st.plotly_chart(fig2, use_container_width=True)
+    st.subheader("Serie: Producción (t) y Superficie verde — lag (ha)")
+    # Agregación mensual ordenada
+    tmp = df_f.sort_values("FECHA_YYYYMM").copy()
+    g1 = (tmp.groupby("FECHA_YYYYMM", as_index=False)
+            .agg(
+                produccion_total_t=("PRODUCCION","sum"),
+                superficie_verde_lag_ha=("VERDE_LAG","sum")
+            ))
+
+    # -----  padding para que superficie verde lag no quede pegada arriba -----
+    y2_max = g1["superficie_verde_lag_ha"].max() if g1["superficie_verde_lag_ha"].notna().any() else 0
+    y2_top = y2_max * 2 if y2_max and y2_max > 0 else 1
+
+    # ----- Figura con doble eje -----
+    fig1 = go.Figure()
+
+    # Barras: Producción (t) - eje izquierdo
+    fig1.add_trace(go.Bar(
+        x=g1["FECHA_YYYYMM"],
+        y=g1["produccion_total_t"],
+        name="Producción (t)",
+        hovertemplate="Mes: %{x|%Y-%m}<br>Producción: %{y:,.0f} t<extra></extra>"
+    ))
+
+    # Línea: Superficie verde — lag (ha) - eje derecho
+    fig1.add_trace(go.Scatter(
+        x=g1["FECHA_YYYYMM"],
+        y=g1["superficie_verde_lag_ha"],
+        name=f"Superficie verde — lag {lag_meses} m (ha)",
+        mode="lines+markers",
+        yaxis="y2",
+        hovertemplate="Mes: %{x|%Y-%m}<br>Superficie verde (lag): %{y:,.0f} ha<extra></extra>"
+    ))
+
+    fig1.update_layout(
+        margin=dict(l=10, r=10, t=10, b=10),
+        xaxis=dict(title="Mes",  tickformat="%Y-%m"),
+        yaxis=dict(title="Producción (t)"),
+        yaxis2=dict(
+            title="Superficie verde (ha)",
+            overlaying="y",
+            side="right",
+            range=[0, y2_top]
+        ),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
+    )
+
+    st.plotly_chart(fig1, use_container_width=True)
+
+    help_box(
+        "ℹ️ ¿Cómo leer este gráfico?",
+        f"""
+    - **Barras**: producción mensual (t).  
+    - **Línea**: superficie verde **desplazada** (lag) {lag_meses} mes(es) (proxy de oferta futura).  
+    - **Lectura**: si la línea sube hoy, espera barras más altas **después** (picos de oferta).  
+    - **Ejemplo**: la producción de mayo se compara con la superficie verde de **marzo** si el lag es **2**.
+    """
+    )
+
+    # with right:
+    #     st.markdown("""
+    #     <div style="height:100%; display:flex; align-items:flex-end;">
+    #         <div>
+    #         <b>ℹ️ ¿Cómo leer este gráfico?</b><br>
+    #         - <b>Barras</b>: producción mensual (t).<br>
+    #         - <b>Línea</b>: superficie verde desplazada (lag) {lag_meses} mes(es) (proxy de oferta futura).<br>
+    #         - <b>Lectura</b>: si la línea sube hoy, espera barras más altas después (picos de oferta).<br>
+    #         - <b>Ejemplo</b>: la producción de mayo se compara con la superficie verde de marzo si el lag es 2.
+    #         </div>
+    #     </div>
+    #     """, unsafe_allow_html=True)
 
     st.subheader("Mapa: métrica anual por distrito")
-    if gj is None:
-        st.warning("No se encontró el GeoJSON de distritos. Coloca `geo/distritos_piura.geojson` con campo UBIGEO.")
-    else:
-        metric_opt = st.selectbox("Métrica a mapear",
-                                  options=["REND_THA_ANUAL","PROD_SUM","PRECIO_POND"],
-                                  index=0,
-                                  help="REND_THA_ANUAL (t/ha), PROD_SUM (t), PRECIO_POND (S/ kg)")
-        # Base anual
-        if anu.empty:
-            st.info("No hay agregados anuales; usaré una agregación rápida en memoria.")
-            base_map = (df_f.groupby(["UBIGEO","ANIO"], as_index=False)
-                          .agg(PROD_SUM=("PRODUCCION","sum"),
-                               COSE_SUM=("COSECHA","sum"),
-                               PRECIO_POND=("PRECIO_CHACRA", lambda s: weighted_mean(s, df_f.loc[s.index,"PRODUCCION_KG"]))))
-            base_map["REND_THA_ANUAL"] = np.where(base_map["COSE_SUM"]>0, base_map["PROD_SUM"]/base_map["COSE_SUM"], np.nan)
-        else:
-            base_map = anu.copy()
-            base_map = base_map[(base_map["ANIO"]>=rango_anios[0]) & (base_map["ANIO"]<=rango_anios[1])]
-            base_map = base_map.groupby("UBIGEO", as_index=False).agg(
-                REND_THA_ANUAL=("REND_THA_ANUAL","mean"),
-                PROD_SUM=("PROD_SUM","sum"),
-                PRECIO_POND=("PRECIO_POND","mean")
-            )
+    help_box(
+        "ℹ️ ¿Cómo leer el mapa?",
+        """
+    - Muestra la **métrica anual por distrito** con los filtros aplicados (cultivo y años).
+    - Distritos sin datos se ven en **gris claro** y el tooltip indica **“Sin valor registrado”**.
+    - Útil para priorizar **territorios** con menor rendimiento, menor producción o menor precio medio.
+    """
+    )
 
-        # Plotly choropleth
+    if gj is None:
+        st.warning("No se encontró el GeoJSON de distritos. Coloca `geo/distritos_piura.geojson` con campo UBIGEO y NOMBDIST.")
+    else:
+        # ---- 1) Extraer lista completa de distritos desde el GeoJSON (UBIGEO + NOMBDIST)
+        gj_rows = []
+        for ft in gj.get("features", []):
+            props = ft.get("properties", {})
+            gj_rows.append({
+                "UBIGEO": str(props.get("UBIGEO", "")).zfill(6),
+                "NOMBDIST": props.get("NOMBDIST", "")
+            })
+        df_dists = pd.DataFrame(gj_rows).drop_duplicates(subset=["UBIGEO"])
+
+        # ---- 2) Agregados por distrito-año desde df_f (filtrado por cultivo / años)
+        g_map = (df_f.groupby(["UBIGEO","ANIO"], as_index=False)
+                    .agg(
+                        produccion_total_t=("PRODUCCION","sum"),
+                        cosecha_total_ha=("COSECHA","sum")
+                    ))
+
+        g_map["rendimiento_t_ha"] = np.where(
+            g_map["cosecha_total_ha"] > 0,
+            g_map["produccion_total_t"] / g_map["cosecha_total_ha"],
+            np.nan
+        )
+
+        wprice = (df_f.groupby(["UBIGEO","ANIO"])
+                    .apply(lambda g: weighted_mean(g["PRECIO_CHACRA"], g["PRODUCCION_KG"]))
+                    .rename("precio_chacra_pond_skg")
+                    .reset_index())
+        g_map = g_map.merge(wprice, on=["UBIGEO","ANIO"], how="left")
+
+        base_map = (g_map.groupby("UBIGEO", as_index=False)
+                        .agg(
+                            produccion_total_t=("produccion_total_t","sum"),
+                            rendimiento_t_ha=("rendimiento_t_ha","mean"),
+                            precio_chacra_pond_skg=("precio_chacra_pond_skg","mean")
+                        ))
+
+        # ---- 3) Convertir UBIGEO a str en ambos DF antes del merge
+        df_dists["UBIGEO"] = df_dists["UBIGEO"].astype(str).str.zfill(6)
+        base_map["UBIGEO"] = base_map["UBIGEO"].astype(str).str.zfill(6)
+
+        # Merge con TODOS los distritos
+        base_map = df_dists.merge(base_map, on="UBIGEO", how="left")
+
+        # ---- 4) Selector de métrica legible
+        metric_options = {
+            "Rendimiento (t/ha)": "rendimiento_t_ha",
+            "Producción total (t)": "produccion_total_t",
+            "Precio chacra (S/ kg)": "precio_chacra_pond_skg",
+        }
+        metric_label = st.selectbox("Métrica a mapear", options=list(metric_options.keys()), index=0)
+        metric_col = metric_options[metric_label]
+
+        # ---- 5) Separar válidos vs. NaN para pintar NaN en gris claro
+        df_valid = base_map[base_map[metric_col].notna()].copy()
+        df_nan   = base_map[base_map[metric_col].isna()].copy()
+
+        # Choropleth principal (válidos)
         fig_map = px.choropleth(
-            base_map,
+            df_valid,
             geojson=gj,
-            color=metric_opt,
-            featureidkey="properties.UBIGEO",  # ajusta si tu GeoJSON usa otra clave
             locations="UBIGEO",
+            featureidkey="properties.UBIGEO",
+            color=metric_col,
             projection="mercator",
-            color_continuous_scale="YlGn"
+            color_continuous_scale="YlGn",
+            labels={metric_col: metric_label}
         )
         fig_map.update_geos(fitbounds="locations", visible=False)
-        fig_map.update_layout(margin=dict(l=10,r=10,t=10,b=10))
+
+        # Tooltip personalizados para válidos
+        hover_valid = (
+        "<b>Distrito:</b> %{customdata[0]}<br>"
+        "<b>UBIGEO:</b> %{location}<br>"
+        "<b>" + metric_label + ":</b> %{z:,.2f}"
+        "<extra></extra>"
+        )
+
+        fig_map.update_traces(
+            hovertemplate=hover_valid,
+            customdata=np.stack([df_valid["NOMBDIST"].values], axis=-1)
+        )
+
+        # Capa para NaN (gris claro)
+        if not df_nan.empty:
+            fig_map.add_trace(go.Choropleth(
+                geojson=gj,
+                locations=df_nan["UBIGEO"],
+                z=[0]*len(df_nan),
+                featureidkey="properties.UBIGEO",
+                showscale=False,
+                marker_line_width=0.2,
+                marker_line_color="white",
+                colorscale=[[0, "lightgray"], [1, "lightgray"]],
+                hovertemplate=(
+                    "<b>Distrito:</b> %{customdata[0]}<br>"
+                    "<b>UBIGEO:</b> %{location}<br>"
+                    f"<b>{metric_label}:</b> Sin valor registrado"
+                    "<extra></extra>"
+                ),
+                customdata=np.stack([df_nan["NOMBDIST"].values], axis=-1)
+            ))
+
+        fig_map.update_layout(
+            margin=dict(l=10, r=10, t=10, b=10),
+            coloraxis_colorbar=dict(title=metric_label),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
+        )
+
         st.plotly_chart(fig_map, use_container_width=True)
 
 # ========== Tab 2: Mercado ==========
 with tab2:
     st.subheader("Producción vs Precio chacra")
+    # Agregación mensual filtrada (ya aplica cultivo y rango de años del sidebar)
     g3 = (df_f.groupby("FECHA_YYYYMM", as_index=False)
-              .agg(PROD=("PRODUCCION","sum"),
-                   PRECIO_POND=("PRECIO_CHACRA", lambda s: weighted_mean(s, df_f.loc[s.index,"PRODUCCION_KG"]))))
-    fig3 = px.bar(g3, x="FECHA_YYYYMM", y="PROD", labels={"PROD":"Producción (t)"})
-    fig3.add_scatter(x=g3["FECHA_YYYYMM"], y=g3["PRECIO_POND"], mode="lines", name="Precio chacra (S/ kg)")
-    fig3.update_layout(margin=dict(l=10,r=10,t=10,b=10))
-    st.plotly_chart(fig3, use_container_width=True)
+              .agg(PROD=("PRODUCCION","sum")))
 
-    # tabla de sobreoferta simple: picos de producción (p85) con caída de precios (diferencia negativa)
+    # Precio chacra ponderado por volumen (kg)
+    # Usamos los índices de df_f para alinear pesos con precios
+    price_pond = (df_f
+                  .groupby("FECHA_YYYYMM")
+                  .apply(lambda g: weighted_mean(g["PRECIO_CHACRA"], g["PRODUCCION_KG"]))
+                  .rename("PRECIO_POND")
+                  .reset_index())
+
+    g3 = g3.merge(price_pond, on="FECHA_YYYYMM", how="left")
+
+    # Figura con doble eje y
+    fig = go.Figure()
+
+    # Barras: Producción (eje izquierdo)
+    fig.add_trace(go.Bar(
+        x=g3["FECHA_YYYYMM"],
+        y=g3["PROD"],
+        name="Producción (t)",
+        hovertemplate="Mes: %{x|%Y-%m}<br>Producción: %{y:,.0f} t<extra></extra>"
+    ))
+
+    # Línea: Precio chacra (eje derecho)
+    fig.add_trace(go.Scatter(
+        x=g3["FECHA_YYYYMM"],
+        y=g3["PRECIO_POND"],
+        name="Precio chacra (S/ kg)",
+        mode="lines+markers",
+        yaxis="y2",
+        hovertemplate="Mes: %{x|%Y-%m}<br>Precio chacra: S/ %{y:,.2f}/kg<extra></extra>"
+    ))
+
+    fig.update_layout(
+        margin=dict(l=10, r=10, t=10, b=10),
+        xaxis=dict(title="Mes"),
+        yaxis=dict(title="Producción (t)"),
+        yaxis2=dict(title="Precio chacra (S/ kg)", overlaying="y", side="right"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+    st.markdown("""
+        **¿Qué estás viendo?**  
+        - **Barras**: producción mensual total (toneladas).  
+        - **Línea**: precio promedio ponderado en chacra (S/ por kg).  
+        **¿Para qué sirve?**  
+        - Detectar posibles **sobreofertas**: meses con picos de producción que coinciden con **caídas de precio** (impacto en ingresos).  
+        **Cómo leerlo:**  
+        - Barras altas + línea que baja = señal de presión de oferta en el mercado.  
+        - Barras bajas + línea que sube = escasez relativa, precios más altos.
+        """)
+    # Tabla de “sobreoferta”
     st.subheader("Eventos de posible sobreoferta")
+    g3 = g3.sort_values("FECHA_YYYYMM")
     g3["PRECIO_POND_LAG1"] = g3["PRECIO_POND"].shift(1)
     g3["DELTA_PRECIO"] = g3["PRECIO_POND"] - g3["PRECIO_POND_LAG1"]
     p85 = g3["PROD"].quantile(0.85) if g3["PROD"].notna().any() else np.nan
-    eventos = g3[(g3["PROD"]>=p85) & (g3["DELTA_PRECIO"]<0)]
+    eventos = g3[(g3["PROD"] >= p85) & (g3["DELTA_PRECIO"] < 0)]
     st.dataframe(eventos, use_container_width=True)
-
+    st.markdown("""
+        **¿Qué muestra esta tabla?**  
+        - Meses donde la producción estuvo en el **percentil 85 o superior** (picos) y el **precio cayó** respecto al mes anterior.  
+        - Sirve como evidencia concreta de **sobreoferta** que presiona el precio a la baja.
+        """)    
 # ========== Tab 3: Predicción ==========
 with tab3:
     st.subheader(f"Proyección 1–{lag_meses} meses usando VERDE_LAG")
@@ -241,6 +481,16 @@ with tab3:
     st.plotly_chart(fig4, use_container_width=True)
 
     st.caption("Modelo simple y abierto: Proyección = VERDE_LAG × mediana(PRODUCCION/VERDE_LAG). Reemplazable por ARIMA/Regresión más adelante.")
+    st.markdown(f"""
+    **¿Qué estás viendo?**  
+    - **Línea 1 (observada)**: producción registrada.  
+    - **Línea 2 (proyección)**: `VERDE_LAG × mediana(PRODUCCION/VERDE_LAG)` con lag de **{lag_meses}** mes(es).  
+    **¿Para qué sirve?**  
+    - Anticipar producción **1–{lag_meses}** meses antes con un método **abierto y replicable**.  
+    **Cómo leerlo:**  
+    - Si las curvas coinciden, el proxy funciona bien.  
+    - Si la proyección supera la observada, podría venir **sobreoferta**; si queda por debajo, **escasez**.
+    """)
 
 # ========== Tab 4: Calidad de datos ==========
 with tab4:
