@@ -386,7 +386,7 @@ with tab1:
 
         st.plotly_chart(fig_map, use_container_width=True)
 
-# ========== Tab 2: Mercado ==========
+# ========== Tab 2: Mercado =========
 with tab2:
     st.subheader("Producción vs Precio chacra")
     # Agregación mensual filtrada (ya aplica cultivo y rango de años del sidebar)
