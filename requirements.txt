@@ -1,7 +1,5 @@
+streamlit
 pandas
 numpy
-streamlit
 plotly
-jupyter
-ipykernel
-streamlit-plotly-events
+openpyxl
