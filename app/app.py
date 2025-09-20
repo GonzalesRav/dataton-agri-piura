@@ -414,6 +414,6 @@ with st.expander("Cómo leerlo / limitaciones (flexibilidad)"):
 
 st.caption(
     "Construido con Streamlit • Código abierto • Reproducible • "
-    "Desarrollado por Johana Gonzales 👩‍💻 [Conecta en LinkedIn](https://www.linkedin.com/in/gonzalesrav/)"
+    "Desarrollado por Johana Gonzales 👩‍💻 [Conecta en LinkedIn](https://www.linkedin.com/in/gonzalesrav/) | [GitHub](https://github.com/GonzalesRav)"
 )
 
