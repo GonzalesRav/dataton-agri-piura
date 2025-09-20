@@ -6,8 +6,12 @@
 #   - ../../diccionario_cultivos_piura.csv         (CULTIVO, COD_CULTIVO, TIPO_CULTIVO)
 # Salidas (se crean en ../data_proc/):
 #   - dataset_piura_clean.csv  (mensual, normalizado)
-#   - dataset_piura_anual.csv  (anio-cultivo, precios anualizados)
+#   - dataset_piura_anual.csv  (anio-cultivo, precios anualizados ponderados)
 #   - preprocess_report.md     (reporte de validaciones)
+# Reglas clave de precio:
+#   - El precio chacra SOLO se considera válido cuando PRODUCCION > 0 Y PRECIO_CHACRA > 0.
+#   - En caso contrario se marca como NaN (sin dato) para evitar sesgos (p.ej. ceros).
+#   - El precio anual se calcula como promedio ponderado por producción (t).
 # ------------------------------------------------------------
 
 from pathlib import Path
@@ -16,8 +20,8 @@ import pandas as pd
 import numpy as np
 
 # --- rutas y setup ---
-RAW_CSV  = Path("../../Formato_dataset_productos.csv")     # crudo GRP
-DICT_CSV = Path("../../diccionario_cultivos_piura.csv")    # diccionario con TIPO_CULTIVO (sin Desconocidos)
+RAW_CSV  = Path("../../Formato_dataset_productos.csv")    
+DICT_CSV = Path("../../diccionario_cultivos_piura.csv")    
 OUT_DIR  = Path("../data_proc")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -134,13 +138,28 @@ def main():
         if col in m.columns:
             m[col] = pd.to_numeric(m[col], errors="coerce")
 
-    # rendimiento (t/ha)
+    # --- Reglas de precio válido ---
+    # Solo es válido cuando hay producción > 0 y precio > 0
+    mask_precio_valido = (m["PRODUCCION"] > 0) & (m["PRECIO_CHACRA"] > 0)
+
+    # Guardamos el precio original para auditoría
+    m["PRECIO_CHACRA_ORIG"] = m["PRECIO_CHACRA"]
+
+    # Precio limpio: NaN cuando no cumple las condiciones
+    m.loc[~mask_precio_valido, "PRECIO_CHACRA"] = np.nan
+
+    # --- Conteo de precios invalidados (caso solicitado) ---
+    # Solo cuenta los registros donde producción > 0 y precio = 0
+    n_precio_to_nan = ((m["PRODUCCION"] > 0) & (m["PRECIO_CHACRA_ORIG"] == 0)).sum()
+
+    # rendimiento (t/ha) basado en COSECHA
     m["RENDIMIENTO_T_HA"] = np.where(
         (m["COSECHA"] > 0) & np.isfinite(m["COSECHA"]),
         m["PRODUCCION"] / m["COSECHA"],
         np.nan
     )
-    # valor de producción (S/)
+
+    # valor de producción (S/) — solo calculable si hay precio válido
     m["VALOR_PROD_S"] = m["PRODUCCION"] * 1000.0 * m["PRECIO_CHACRA"]
 
     # 7) Estándares de texto y campaña
@@ -157,21 +176,35 @@ def main():
         "ANIO","MES","CAMPANA","DEPARTAMENTO","PROVINCIA","DISTRITO","UBIGEO",
         "CULTIVO_STD","CULTIVO_NORM","TIPO_CULTIVO",
         "SIEMBRA","COSECHA","PRODUCCION","RENDIMIENTO_T_HA",
-        "PRECIO_CHACRA","VALOR_PROD_S"
+        "PRECIO_CHACRA","VALOR_PROD_S","PRECIO_CHACRA_ORIG"
     ]
     cols_out = [c for c in cols_out if c in m.columns]
     clean = m[cols_out].copy().sort_values(["ANIO","MES","CULTIVO_STD"])
     clean.to_csv(OUT_CLEAN, index=False)
 
-    # 9) Agregación anual (anio–cultivo–tipo) + precio anualizado
-    anual = clean.groupby(["ANIO","CULTIVO_STD","TIPO_CULTIVO"], as_index=False).agg(
+    def _precio_pond(grp: pd.DataFrame) -> float:
+        # Solo observaciones con precio válido
+        v = grp.dropna(subset=["PRECIO_CHACRA"])
+        w = v["PRODUCCION"].fillna(0)
+        if w.sum() <= 0:
+            return np.nan
+        # ponderar por producción (t) — el factor 1000 (kg) cancela en numerador/denominador
+        return (v["PRECIO_CHACRA"] * w).sum() / w.sum()
+
+    anual_base = clean.groupby(["ANIO","CULTIVO_STD","TIPO_CULTIVO"], as_index=False).agg(
         area_sembrada_ha=("SIEMBRA","sum"),
         area_cosechada_ha=("COSECHA","sum"),
         produccion_t=("PRODUCCION","sum"),
-        precio_prom_s_kg=("PRECIO_CHACRA","mean"),   # promedio simple (puedes ponderar por volumen si quieres)
         valor_prod_s=("VALOR_PROD_S","sum"),
-        rendimiento_t_ha=("RENDIMIENTO_T_HA","mean")
-    ).sort_values(["ANIO","CULTIVO_STD"])
+        rendimiento_t_ha=("RENDIMIENTO_T_HA","mean"),
+        n_obs_precio_val=("PRECIO_CHACRA", lambda s: s.notna().sum()),
+        n_obs_total=("PRECIO_CHACRA", "size"),
+    )
+
+    # precio anual ponderado por producción
+    precio_pond = clean.groupby(["ANIO","CULTIVO_STD","TIPO_CULTIVO"]).apply(_precio_pond).reset_index(name="precio_prom_s_kg")
+    anual = anual_base.merge(precio_pond, on=["ANIO","CULTIVO_STD","TIPO_CULTIVO"], how="left") \
+                     .sort_values(["ANIO","CULTIVO_STD"])
     anual.to_csv(OUT_ANUAL, index=False)
 
     # 10) Validaciones básicas (banderas)
@@ -188,6 +221,9 @@ def main():
         hi_r = (clean["RENDIMIENTO_T_HA"] > 60).sum()  # umbral genérico para outliers
         if hi_r > 0:
             issues.append(f"- {hi_r} filas con rendimiento > 60 t/ha (posible outlier).")
+
+    # Diagnóstico de precios invalidados
+    report.append(f"🔎 Filas con PRODUCCION > 0 pero PRECIO_CHACRA = 0: {int(n_precio_to_nan):,} (marcadas como NaN).")
 
     # 11) Reporte
     report.append(f"Filas RAW:   {len(df_raw):,}")
